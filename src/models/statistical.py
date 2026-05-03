@@ -3,7 +3,7 @@ import numpy as np
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.seasonal import MSTL
-from statsmodels.tsa.deterministic import Fourier
+from statsmodels.tsa.deterministic import Fourier, DeterministicProcess
 from prophet import Prophet
 
 class StatisticalForecaster:
@@ -32,21 +32,32 @@ class StatisticalForecaster:
         results = model.fit()
         return results
 
-    def run_sarimax_fourier(self, train_data, steps_ahead=1):
+    def run_sarimax_fourier(self, train_data):
         """
         SARIMAX dengan Deret Fourier untuk Multiple Seasonality.
+        Menggunakan DeterministicProcess untuk menggabungkan pola 24 jam & 168 jam.
         """
         print("Running SARIMAX with Fourier features...")
-        # Setup Fourier terms untuk harian (24) dan mingguan (168)
-        # order=2 adalah derajat fleksibilitas gelombang
-        daily_fourier = Fourier(period=24, order=2).in_sample(train_data.index)
-        weekly_fourier = Fourier(period=168, order=2).in_sample(train_data.index)
-        exog_train = pd.concat([daily_fourier, weekly_fourier], axis=1)
+        
+        # Bikin Fourier harian dan mingguan secara terpisah
+        fourier_24 = Fourier(period=24, order=2)
+        fourier_168 = Fourier(period=168, order=2)
+        
+        # Gabungin pakai DeterministicProcess
+        dp = DeterministicProcess(
+            index=train_data.index,
+            additional_terms=[fourier_24, fourier_168],
+            drop=True
+        )
+        
+        # Generate fitur X untuk training
+        exog_train = dp.in_sample()
         
         # Fit SARIMAX
         model = SARIMAX(train_data, exog=exog_train, order=(1, 1, 1))
         results = model.fit(disp=False)
-        return results
+        
+        return results, dp
 
     def run_prophet_decomposition(self, train_data_df):
         """
