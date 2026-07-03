@@ -26,16 +26,31 @@ class TimeSeriesDataLoader:
         df = df.resample('h').interpolate(method='linear')
         print(f"Data cleaned. Total baris: {len(df)}")
         return df
-
+    
+    def split_and_scale(self, df, feature_cols, train_ratio=0.8):
+            """Split data (tanpa ngacak urutan waktu) lalu scale."""
+            print("Splitting and Scaling data...")
+            
+            train_size = int(len(df) * train_ratio)
+            train_df = df.iloc[:train_size].copy()
+            test_df = df.iloc[train_size:].copy()
+            self.target_scaler.fit(train_df[[self.target_col]])
+            self.feature_scaler.fit(train_df[feature_cols])
+            
+            scaled_train_array = self.feature_scaler.transform(train_df[feature_cols])
+            scaled_test_array = self.feature_scaler.transform(test_df[feature_cols])
+            
+            scaled_train_df = pd.DataFrame(scaled_train_array, columns=feature_cols, index=train_df.index)
+            scaled_test_df = pd.DataFrame(scaled_test_array, columns=feature_cols, index=test_df.index)
+            
+            return scaled_train_df, scaled_test_df
+        
     def scale_data(self, df, feature_cols):
         print("Scaling data...")
-        # Fit scaler khusus Y (target)
         self.target_scaler.fit(df[[self.target_col]])
         
-        # Fit scaler X (semua fitur yang dipilih)
         scaled_array = self.feature_scaler.fit_transform(df[feature_cols])
         
-        # Balikin lagi ke bentuk DataFrame biar rapi
         scaled_df = pd.DataFrame(scaled_array, columns=feature_cols, index=df.index)
         return scaled_df
 
