@@ -6,9 +6,7 @@ from statsmodels.tsa.seasonal import MSTL
 
 class TimeSeriesDataLoader:
     """
-    Data loader untuk pipeline LSTM forecasting Carbon Intensity & Renewable Energy.
-    
-    Dirancang sesuai pedoman Bu Regita:
+    Data loader untuk pipeline LSTM forecasting Carbon Intensity & Renewable Energy.:
     - Support Univariate (CI saja / RE saja) dan Multivariate (CI + RE)
     - MSTL Decomposition (daily period=24, weekly period=168)
     - PACF-based lag features
@@ -20,36 +18,71 @@ class TimeSeriesDataLoader:
     RE_COL = 'renewable_percentage'
 
     def __init__(self):
-        self.feature_scaler = MinMaxScaler(feature_range=(0, 1))
-        self.target_scaler = MinMaxScaler(feature_range=(0, 1))
+       self.feature_scaler = MinMaxScaler(feature_range=(0, 1))
 
-    # =========================================================================
-    # 1. DATA LOADING
-    # =========================================================================
+    # DATA LOADING
+    def load_processed_data(self, filepath):
+        """
+        Load dataset hasil preprocessing.
+        
+        Dataset diasumsikan sudah:
+        - digabungkan 2024–2025
+        - timestamp sudah valid
+        - duplicate timestamp sudah ditangani
+        - invalid values sudah ditangani
+        - anomaly/outlier sudah dikoreksi
+        - missing values sudah diimputasi
+        """
+        print(f"Loading processed data from {filepath}...")
 
-    def load_and_clean(self, filepath):
-        """
-        Membaca CSV dataset yang sudah di-preprocessing.
-        Expects columns: datetime, carbon_intensity, renewable_percentage
-        """
-        print(f"Loading data from {filepath}...")
         df = pd.read_csv(filepath)
 
-        # Parse datetime & set as index
-        df['datetime'] = pd.to_datetime(df['datetime'])
+        df.columns = df.columns.str.strip()
+
+        required_cols = [
+            'datetime',
+            self.CI_COL,
+            self.RE_COL
+        ]
+
+        missing_cols = [
+            col for col in required_cols
+            if col not in df.columns
+        ]
+
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns: {missing_cols}\n"
+                f"Available columns: {df.columns.tolist()}"
+            )
+
+        df['datetime'] = pd.to_datetime(
+            df['datetime'],
+            utc=True
+        )
+
         df.set_index('datetime', inplace=True)
         df.sort_index(inplace=True)
 
-        # Pastikan hanya kolom yang kita butuhkan
-        cols_to_keep = [c for c in [self.CI_COL, self.RE_COL] if c in df.columns]
-        df = df[cols_to_keep]
+        df = df[
+            [self.CI_COL, self.RE_COL]
+        ].copy()
 
-        # Resample ke hourly & interpolasi jika ada gap
-        df = df.resample('h').interpolate(method='linear')
-        df.dropna(inplace=True)
+        df[self.CI_COL] = pd.to_numeric(
+            df[self.CI_COL],
+            errors='coerce'
+        )
 
-        print(f"Data cleaned. Shape: {df.shape}")
+        df[self.RE_COL] = pd.to_numeric(
+            df[self.RE_COL],
+            errors='coerce'
+        )
+
+        print(f"Data loaded. Shape: {df.shape}")
+        print(f"Columns: {df.columns.tolist()}")
         print(f"Range: {df.index.min()} → {df.index.max()}")
+        print(f"Missing values:\n{df.isna().sum()}")
+
         return df
 
     # =========================================================================
@@ -202,45 +235,70 @@ class TimeSeriesDataLoader:
         print(f"  Seasonal dummies added. Total columns: {len(df_dummy.columns)}")
         return df_dummy
 
-    # =========================================================================
-    # 3. SPLIT, SCALE, WINDOWING
-    # =========================================================================
+    # SPLIT, SCALE, WINDOWING
+    def split_and_scale(
+        self,
+        df,
+        feature_cols,
+        target_cols,
+        train_ratio=0.8
+    ):
+        """
+        Temporal split dan Min-Max normalization.
 
-    def split_and_scale(self, df, feature_cols, target_cols, train_ratio=0.8):
+        Scaler hanya di-fit menggunakan training data
+        untuk mencegah data leakage.
         """
-        Split data secara temporal (tanpa shuffle) lalu scale.
-        
-        Parameters
-        ----------
-        df : pd.DataFrame
-        feature_cols : list of str
-            Semua kolom yang masuk ke sliding window (termasuk target).
-        target_cols : list of str
-            Kolom yang jadi target prediksi (1 untuk univariate, 2 untuk multivariate).
-        train_ratio : float
-            Proporsi data training. Default 0.8.
-            
-        Returns
-        -------
-        tuple: (scaled_train_df, scaled_test_df)
-        """
+
         train_size = int(len(df) * train_ratio)
+
         train_df = df.iloc[:train_size].copy()
         test_df = df.iloc[train_size:].copy()
 
-        # Fit scaler hanya pada data training
-        self.target_scaler.fit(train_df[target_cols])
-        self.feature_scaler.fit(train_df[feature_cols])
+        # ---------------------------------------------------------
+        # Fit scaler ONLY on training data
+        # ---------------------------------------------------------
+        self.feature_scaler.fit(
+            train_df[feature_cols]
+        )
 
-        # Transform
-        scaled_train = self.feature_scaler.transform(train_df[feature_cols])
-        scaled_test = self.feature_scaler.transform(test_df[feature_cols])
+        # ---------------------------------------------------------
+        # Transform train & test using same scaler
+        # ---------------------------------------------------------
+        train_scaled = self.feature_scaler.transform(
+            train_df[feature_cols]
+        )
 
-        scaled_train_df = pd.DataFrame(scaled_train, columns=feature_cols, index=train_df.index)
-        scaled_test_df = pd.DataFrame(scaled_test, columns=feature_cols, index=test_df.index)
+        test_scaled = self.feature_scaler.transform(
+            test_df[feature_cols]
+        )
 
-        print(f"  Split: Train={len(scaled_train_df)}, Test={len(scaled_test_df)}")
-        return scaled_train_df, scaled_test_df
+        scaled_train_df = pd.DataFrame(
+            train_scaled,
+            columns=feature_cols,
+            index=train_df.index
+        )
+
+        scaled_test_df = pd.DataFrame(
+            test_scaled,
+            columns=feature_cols,
+            index=test_df.index
+        )
+
+        print(
+            f"Split: "
+            f"Train={len(scaled_train_df)}, "
+            f"Test={len(scaled_test_df)}"
+        )
+
+        print(
+            f"Features scaled: {len(feature_cols)}"
+        )
+
+        return (
+            scaled_train_df,
+            scaled_test_df
+        )
 
     def create_sliding_window(self, scaled_df, target_cols, look_back=24, forecast_horizon=1):
         """
@@ -288,52 +346,63 @@ class TimeSeriesDataLoader:
         print(f"  Sliding window: X={X.shape}, y={y.shape}")
         return X, y
 
-    # =========================================================================
-    # 4. INVERSE TRANSFORM (untuk evaluasi)
-    # =========================================================================
-
-    def inverse_transform_predictions(self, y_pred, target_cols, feature_cols):
+    # INVERSE TRANSFORM (untuk evaluasi)
+    def inverse_transform_predictions(
+        self,
+        y_pred,
+        target_cols,
+        feature_cols
+    ):
         """
-        Inverse transform prediksi kembali ke skala asli.
-        
-        Karena kita pakai feature_scaler untuk semua fitur, kita perlu 
-        membuat dummy array full-size lalu extract target columns saja.
-        
+        Mengembalikan prediksi dari skala [0, 1]
+        ke skala asli.
+
         Parameters
         ----------
         y_pred : np.ndarray
-            Prediksi yang masih dalam skala [0,1]. Shape: (n_samples, n_targets)
+            Prediksi scaled.
+
         target_cols : list of str
-            Nama kolom target.
+            Kolom target.
+
         feature_cols : list of str
-            Nama semua feature columns (untuk reconstruct full array).
-            
+            Seluruh feature yang digunakan saat scaling.
+
         Returns
         -------
         np.ndarray
-            Prediksi dalam skala asli.
+            Prediksi pada skala asli.
         """
-        n_features = len(feature_cols)
-        n_samples = len(y_pred)
 
-        # Pastikan y_pred 2D
+        y_pred = np.asarray(y_pred)
+
+        # ---------------------------------------------------------
+        # UNIVARIATE / MULTIVARIATE ONE-STEP
+        # ---------------------------------------------------------
         if y_pred.ndim == 1:
-            y_pred = y_pred.reshape(-1, 1)
+            if len(target_cols) > 1:
+                y_pred = y_pred.reshape(1, -1) 
+            else:
+                y_pred = y_pred.reshape(-1, 1) 
+        # ---------------------------------------------------------
+        # Pastikan target index
+        # ---------------------------------------------------------
+        target_indices = [
+            feature_cols.index(col)
+            for col in target_cols
+        ]
 
-        # Buat array dummy dengan zeros
-        dummy = np.zeros((n_samples, n_features))
+        # ---------------------------------------------------------
+        # Dummy array untuk inverse transform
+        # ---------------------------------------------------------
+        dummy = np.zeros(
+            (y_pred.shape[0], len(feature_cols))
+        )
 
-        # Isi posisi target columns dengan nilai prediksi
-        for i, col in enumerate(target_cols):
-            col_idx = feature_cols.index(col)
-            dummy[:, col_idx] = y_pred[:, i]
+        dummy[:, target_indices] = y_pred
 
-        # Inverse transform seluruh array
-        inversed = self.feature_scaler.inverse_transform(dummy)
+        inversed = self.feature_scaler.inverse_transform(
+            dummy
+        )
 
-        # Extract hanya target columns
-        result = np.column_stack([
-            inversed[:, feature_cols.index(col)] for col in target_cols
-        ])
-
-        return result
+        return inversed[:, target_indices]
